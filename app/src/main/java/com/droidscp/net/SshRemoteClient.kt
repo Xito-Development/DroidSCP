@@ -31,8 +31,9 @@ class SshRemoteClient(
         if (!SshCrypto.hasEd25519) {
             cfg.keyAlgorithms = cfg.keyAlgorithms
                 .filter { !it.name.lowercase().contains("ed25519") }
-            cfg.signatureFactories = cfg.signatureFactories
-                .filter { !it.name.lowercase().contains("ed25519") }
+            // In sshj 0.38.0 DefaultConfig does not expose a public "signatureFactories" property.
+            // Attempting to access it causes a compilation error. Filtering keyAlgorithms above
+            // is sufficient to avoid selecting ed25519 keys/signatures when the platform doesn't support them.
         }
         return cfg
     }
