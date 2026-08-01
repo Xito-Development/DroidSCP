@@ -1,5 +1,6 @@
 package com.droidscp.net
 
+import net.schmizz.sshj.DefaultConfig
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.common.IOUtils
 import net.schmizz.sshj.sftp.OpenMode
@@ -21,8 +22,24 @@ class SshRemoteClient(
     private var sftp: SFTPClient? = null
     private val scpMode = site.protocol == Protocol.SCP
 
+    private fun buildConfig(): DefaultConfig {
+        val cfg = DefaultConfig()
+        if (!SshCrypto.hasX25519) {
+            cfg.keyExchangeFactories = cfg.keyExchangeFactories
+                .filter { !it.name.lowercase().contains("curve25519") }
+        }
+        if (!SshCrypto.hasEd25519) {
+            cfg.keyAlgorithms = cfg.keyAlgorithms
+                .filter { !it.name.lowercase().contains("ed25519") }
+            cfg.signatureFactories = cfg.signatureFactories
+                .filter { !it.name.lowercase().contains("ed25519") }
+        }
+        return cfg
+    }
+
     override fun connect() {
-        val c = SSHClient()
+        SshCrypto.init()
+        val c = SSHClient(buildConfig())
         c.addHostKeyVerifier(object : HostKeyVerifier {
             override fun verify(hostname: String, port: Int, key: java.security.PublicKey): Boolean {
                 val fp = SecurityUtils.getFingerprint(key)
