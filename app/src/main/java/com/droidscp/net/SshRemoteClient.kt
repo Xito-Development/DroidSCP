@@ -5,7 +5,7 @@ import net.schmizz.sshj.common.IOUtils
 import net.schmizz.sshj.sftp.OpenMode
 import net.schmizz.sshj.sftp.SFTPClient
 import net.schmizz.sshj.common.SecurityUtils
-import net.schmizz.sshj.connection.channel.direct.LocalPortForwarder
+import net.schmizz.sshj.connection.channel.direct.Parameters
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import net.schmizz.sshj.userauth.password.PasswordUtils
 import net.schmizz.sshj.xfer.FileSystemFile
@@ -187,7 +187,7 @@ class SshRemoteClient(
         val t = Thread {
             try {
                 ssh!!.newLocalPortForwarder(
-                    LocalPortForwarder.Parameters("127.0.0.1", localPort, remoteHost, remotePort), ss
+                    Parameters("127.0.0.1", localPort, remoteHost, remotePort), ss
                 ).listen()
             } catch (_: Exception) {}
         }
