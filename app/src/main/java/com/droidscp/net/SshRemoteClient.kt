@@ -31,8 +31,6 @@ class SshRemoteClient(
         if (!SshCrypto.hasEd25519) {
             cfg.keyAlgorithms = cfg.keyAlgorithms
                 .filter { !it.name.lowercase().contains("ed25519") }
-            cfg.signatureFactories = cfg.signatureFactories
-                .filter { !it.name.lowercase().contains("ed25519") }
         }
         return cfg
     }
