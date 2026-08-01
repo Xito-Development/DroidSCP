@@ -13,6 +13,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
 import android.content.Intent
 import androidx.core.content.FileProvider
@@ -387,6 +389,13 @@ fun BrowserScreen(vm: AppViewModel) {
                         }
                     }
                     if (isRemote) {
+                        val picker = rememberLauncherForActivityResult(
+                            ActivityResultContracts.OpenMultipleDocuments()
+                        ) { uris -> vm.uploadUris(uris) }
+                        ActionBtn(Icons.Default.AttachFile, "Del móvil", true) {
+                            try { picker.launch(arrayOf("*/*")) }
+                            catch (e: Exception) { vm.message.value = "No se pudo abrir el selector" }
+                        }
                         ActionBtn(Icons.Default.Lock, "Permisos", selCount > 0) { showChmod = true }
                         ActionBtn(Icons.Default.EditNote, "Editar", selCount == 1) {
                             vm.openEditor(vm.remoteSelected.first())

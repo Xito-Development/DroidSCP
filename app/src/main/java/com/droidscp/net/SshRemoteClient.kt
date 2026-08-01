@@ -20,7 +20,7 @@ class SshRemoteClient(
 
     private var ssh: SSHClient? = null
     private var sftp: SFTPClient? = null
-    private val scpMode = site.protocol == Protocol.SCP
+    private var scpMode = false   // solo si el servidor no ofrece subsistema SFTP
 
     private fun buildConfig(): DefaultConfig {
         val cfg = DefaultConfig()
@@ -31,9 +31,8 @@ class SshRemoteClient(
         if (!SshCrypto.hasEd25519) {
             cfg.keyAlgorithms = cfg.keyAlgorithms
                 .filter { !it.name.lowercase().contains("ed25519") }
-            // In sshj 0.38.0 DefaultConfig does not expose a public "signatureFactories" property.
-            // Attempting to access it causes a compilation error. Filtering keyAlgorithms above
-            // is sufficient to avoid selecting ed25519 keys/signatures when the platform doesn't support them.
+            cfg.signatureFactories = cfg.signatureFactories
+                .filter { !it.name.lowercase().contains("ed25519") }
         }
         return cfg
     }
@@ -65,18 +64,28 @@ class SshRemoteClient(
             c.authPassword(site.user, site.password)
         }
         ssh = c
-        sftp = c.newSFTPClient()
+        sftp = try {
+            scpMode = false
+            c.newSFTPClient()
+        } catch (e: Exception) {
+            // Algunos servidores (hostings compartidos) no tienen subsistema SFTP:
+            // en ese caso se usa SCP para transferir y comandos de shell para listar.
+            scpMode = true
+            null
+        }
     }
 
     private fun sftp(): SFTPClient = sftp ?: throw IllegalStateException("Sin conexión")
 
     override fun home(): String {
         if (site.initialPath.isNotBlank()) return site.initialPath
+        if (scpMode) return exec("pwd").trim().lines().firstOrNull()?.trim() ?: "/"
         return try { sftp().canonicalize(".") } catch (e: Exception) { "/" }
     }
 
-    override fun list(path: String): List<RemoteFile> =
-        sftp().ls(path).map { r ->
+    override fun list(path: String): List<RemoteFile> {
+        if (scpMode) return listViaShell(path)
+        return sftp().ls(path).map { r ->
             val a = r.attributes
             RemoteFile(
                 name = r.name,
@@ -89,6 +98,47 @@ class SshRemoteClient(
                 group = a.gid.toString()
             )
         }
+    }
+
+    private fun listViaShell(path: String): List<RemoteFile> {
+        val out = exec("ls -la --time-style=+%s ${shq(path)} 2>/dev/null")
+        val res = mutableListOf<RemoteFile>()
+        for (line in out.lines()) {
+            val p = line.trim().split(Regex("\\s+"), 7)
+            if (p.size < 7 || p[0].length < 10) continue
+            val name = p[6]
+            if (name == "." || name == "..") continue
+            val isDir = p[0].startsWith("d")
+            res.add(
+                RemoteFile(
+                    name = name,
+                    path = joinPath(path, name),
+                    isDir = isDir,
+                    size = p[4].toLongOrNull() ?: 0L,
+                    mtime = (p[5].toLongOrNull() ?: 0L) * 1000,
+                    perms = permsFromRwx(p[0]),
+                    owner = p[2],
+                    group = p[3]
+                )
+            )
+        }
+        return res
+    }
+
+    private fun permsFromRwx(s: String): String {
+        var m = 0
+        for (g in 0..2) {
+            var v = 0
+            val base = 1 + g * 3
+            if (s.length > base + 2) {
+                if (s[base] == 'r') v += 4
+                if (s[base + 1] == 'w') v += 2
+                if (s[base + 2] == 'x' || s[base + 2] == 's') v += 1
+            }
+            m = m * 8 + v
+        }
+        return String.format("%03o", m)
+    }
 
     override fun download(remotePath: String, localFile: File, size: Long, cb: Progress) {
         localFile.parentFile?.mkdirs()
@@ -117,14 +167,23 @@ class SshRemoteClient(
         try { rf.close() } catch (_: Exception) {}
     }
 
-    override fun mkdir(path: String) = sftp().mkdir(path)
+    override fun mkdir(path: String) {
+        if (scpMode) { requireOk(exec("mkdir -p ${shq(path)} && echo OK"), "No se pudo crear la carpeta"); return }
+        sftp().mkdir(path)
+    }
+
+    private fun requireOk(out: String, msg: String) {
+        if (!out.contains("OK")) throw RuntimeException(out.trim().ifBlank { msg })
+    }
 
     override fun createFile(path: String) {
+        if (scpMode) { requireOk(exec("touch ${shq(path)} && echo OK"), "No se pudo crear el archivo"); return }
         val rf = sftp().open(path, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC))
         rf.close()
     }
 
     override fun delete(path: String, isDir: Boolean) {
+        if (scpMode) { requireOk(exec("rm -rf ${shq(path)} && echo OK"), "No se pudo eliminar"); return }
         if (isDir) deleteDirRecursive(path) else sftp().rm(path)
     }
 
@@ -133,7 +192,10 @@ class SshRemoteClient(
         sftp().rmdir(path)
     }
 
-    override fun rename(from: String, to: String) = sftp().rename(from, to)
+    override fun rename(from: String, to: String) {
+        if (scpMode) { requireOk(exec("mv ${shq(from)} ${shq(to)} && echo OK"), "No se pudo renombrar"); return }
+        sftp().rename(from, to)
+    }
 
     override fun copy(from: String, to: String, isDir: Boolean) {
         val out = exec("cp -r ${shq(from)} ${shq(to)} && echo OK")
@@ -141,6 +203,7 @@ class SshRemoteClient(
     }
 
     override fun chmod(path: String, octal: String) {
+        if (scpMode) { requireOk(exec("chmod $octal ${shq(path)} && echo OK"), "No se pudo aplicar permisos"); return }
         sftp().chmod(path, Integer.parseInt(octal, 8))
     }
 
@@ -169,7 +232,8 @@ class SshRemoteClient(
         try { rf.close() } catch (_: Exception) {}
     }
 
-    override fun size(path: String): Long = try { sftp().size(path) } catch (e: Exception) { -1 }
+    override fun size(path: String): Long =
+        if (scpMode) -1 else try { sftp().size(path) } catch (e: Exception) { -1 }
 
     override fun compress(dir: String, names: List<String>, archive: String) {
         val list = names.joinToString(" ") { shq(it) }

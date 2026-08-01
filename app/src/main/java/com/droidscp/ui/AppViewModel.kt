@@ -444,6 +444,34 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         startWorker()
     }
 
+    /* ---------- subir desde el selector del móvil ---------- */
+
+    fun uploadUris(uris: List<android.net.Uri>) {
+        if (uris.isEmpty()) return
+        val ctx = getApplication<Application>()
+        viewModelScope.launch(Dispatchers.IO) {
+            for (u in uris) {
+                try {
+                    var name = "archivo"
+                    ctx.contentResolver.query(u, null, null, null, null)?.use { c ->
+                        val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (i >= 0 && c.moveToFirst()) name = c.getString(i)
+                    }
+                    val tmp = File(ctx.cacheDir, "up_${System.currentTimeMillis()}_${name}")
+                    ctx.contentResolver.openInputStream(u)?.use { inp ->
+                        tmp.outputStream().use { out -> inp.copyTo(out) }
+                    }
+                    transfers.add(
+                        TransferItem(seq++, name, true, tmp.absolutePath,
+                            joinPath(remotePath.value, name), tmp.length())
+                    )
+                } catch (e: Exception) { message.value = e.message }
+            }
+            startWorker()
+        }
+        screen.value = Screen.TRANSFERS
+    }
+
     /* ---------- operaciones de archivo ---------- */
 
     fun mkdir(name: String) {
