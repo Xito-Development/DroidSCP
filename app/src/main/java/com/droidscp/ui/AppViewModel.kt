@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.runtime.snapshots.Snapshot
 import java.io.File
 
 enum class Screen { SITES, EDIT, BROWSER, EDITOR, TERMINAL, TRANSFERS, TUNNELS, SETTINGS, ABOUT }
@@ -65,6 +66,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // portapapeles remoto
     val clipboard = mutableStateListOf<String>()
     val clipboardCut = mutableStateOf(false)
+    val clipboardFromRemote = mutableStateOf(true)
 
     // editor / terminal
     val editorPath = mutableStateOf("")
@@ -76,10 +78,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val parallel = mutableStateOf(store.parallel)
     val biometric = mutableStateOf(store.biometric)
     val resume = mutableStateOf(store.resume)
+    val secureScreen = mutableStateOf(store.secureScreen)
+    val savePasswords = mutableStateOf(store.savePasswords)
+
+    // confirmación de huella del servidor (TOFU) y contraseña de sesión
+    val pendingHostKey = mutableStateOf<Pair<Site, String>?>(null)
+    val askPasswordFor = mutableStateOf<Site?>(null)
 
     fun setParallel(v: Int) { parallel.value = v.coerceIn(1, 4); store.parallel = parallel.value }
     fun setBiometric(v: Boolean) { biometric.value = v; store.biometric = v }
     fun setResume(v: Boolean) { resume.value = v; store.resume = v }
+    fun setSecureScreen(v: Boolean) { secureScreen.value = v; store.secureScreen = v }
+    fun setSavePasswords(v: Boolean) {
+        savePasswords.value = v; store.savePasswords = v
+        if (!v) {
+            for (i in sites.indices) sites[i] = sites[i].copy(password = "", keyPassphrase = "")
+            persist()
+        }
+    }
 
     // tuneles
     data class Tunnel(val localPort: Int, val remoteHost: String, val remotePort: Int)
@@ -97,10 +113,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun persist() = store.save(sites)
 
+    /**
+     * Compose no repinta de forma fiable cuando el estado cambia desde un hilo
+     * de fondo: esto fuerza a que los cambios se publiquen en la interfaz.
+     */
+    private fun pushUi() {
+        viewModelScope.launch(Dispatchers.Main) { Snapshot.sendApplyNotifications() }
+    }
+
     fun newSite() { editing.value = Site(); screen.value = Screen.EDIT }
     fun editSite(s: Site) { editing.value = s.copy(); screen.value = Screen.EDIT }
 
-    fun saveSite(s: Site) {
+    fun saveSite(site: Site) {
+        val s = if (savePasswords.value) site else site.copy(password = "", keyPassphrase = "")
         val i = sites.indexOfFirst { it.id == s.id }
         if (i >= 0) sites[i] = s else sites.add(s)
         persist(); screen.value = Screen.SITES
@@ -115,9 +140,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /* ---------- conexión ---------- */
 
-    fun connect(site: Site) = run("Conectando a ${site.host}…") {
+    fun connect(site: Site, trustNew: Boolean = false) {
+        if (!savePasswords.value && site.password.isBlank() && site.keyPath.isBlank()) {
+            askPasswordFor.value = site
+            return
+        }
+        doConnect(site, trustNew)
+    }
+
+    fun connectWithPassword(site: Site, password: String) {
+        askPasswordFor.value = null
+        doConnect(site.copy(password = password), false)
+    }
+
+    fun trustAndConnect() {
+        val p = pendingHostKey.value ?: return
+        pendingHostKey.value = null
+        doConnect(p.first, true)
+    }
+
+    private var pendingSite: Site = Site()
+
+    private fun doConnect(site: Site, trustNew: Boolean) {
+        pendingSite = site
+        run("Conectando a ${site.host}…") {
         client?.close()
-        val c = ClientFactory.create(site) { fp ->
+        val c = ClientFactory.create(site, trustNew) { fp ->
             val idx = sites.indexOfFirst { it.id == site.id }
             if (idx >= 0) { sites[idx] = sites[idx].copy(hostKey = fp); persist() }
         }
@@ -134,6 +182,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             terminalLog.value = ""
             screen.value = Screen.BROWSER
         }
+        }
     }
 
     fun disconnect() {
@@ -145,6 +194,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         currentSite.value = null
         remoteAll.clear(); remoteFiles.clear(); remoteSelected.clear()
         transfers.clear(); clipboard.clear()
+        clearCache()
         screen.value = Screen.SITES
     }
 
@@ -241,6 +291,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val destDir = localPath.value
             viewModelScope.launch(Dispatchers.IO) {
                 for (f in sel) enqueueDownload(f, destDir)
+                pushUi()
                 startWorker()
             }
             remoteSelected.clear()
@@ -248,6 +299,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val sel = localFiles.filter { localSelected.contains(it.absolutePath) }
             viewModelScope.launch(Dispatchers.IO) {
                 for (f in sel) enqueueUpload(f, remotePath.value)
+                pushUi()
                 startWorker()
             }
             localSelected.clear()
@@ -292,6 +344,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     remoteAll.clear(); remoteAll.addAll(files); applyView()
                 } catch (_: Exception) {}
             }
+            pushUi()
         }
     }
 
@@ -305,15 +358,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         item
     }
 
-    private fun drainQueue() {
+    private suspend fun drainQueue() {
         while (true) {
             val item = takeNext() ?: break
-            notifyProgress()
+            notifyProgress(); pushUi()
             try {
                 if (item.upload) {
                     client!!.upload(File(item.src), item.dst) { d, t ->
                         val i = transfers.indexOfFirst { it.id == item.id }
                         if (i >= 0) transfers[i] = transfers[i].copy(done = d, total = if (t > 0) t else transfers[i].total)
+                        pushUi()
                     }
                 } else {
                     val lf = File(item.dst)
@@ -322,14 +376,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     client!!.downloadResume(item.src, lf, item.total, off) { d, t ->
                         val i = transfers.indexOfFirst { it.id == item.id }
                         if (i >= 0) transfers[i] = transfers[i].copy(done = d, total = if (t > 0) t else transfers[i].total)
+                        pushUi()
                     }
                 }
                 val i = transfers.indexOfFirst { it.id == item.id }
                 if (i >= 0) transfers[i] = transfers[i].copy(state = TState.HECHO, done = transfers[i].total)
-                notifyProgress()
+                notifyProgress(); pushUi()
+                // refresco inmediato de la carpeta afectada
+                try {
+                    if (item.upload && parentPath(item.dst) == remotePath.value) {
+                        val files = client!!.list(remotePath.value)
+                        withContext(Dispatchers.Main) {
+                            remoteAll.clear(); remoteAll.addAll(files); applyView()
+                        }
+                    } else if (!item.upload && File(item.dst).parent == localPath.value) {
+                        withContext(Dispatchers.Main) { refreshLocal() }
+                    }
+                } catch (_: Exception) {}
             } catch (e: Exception) {
                 val i = transfers.indexOfFirst { it.id == item.id }
                 if (i >= 0) transfers[i] = transfers[i].copy(state = TState.ERROR, error = e.message ?: "Error")
+                pushUi()
             }
         }
     }
@@ -423,6 +490,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: Exception) { message.value = e.message ?: "No se pudo abrir el túnel" }
     }
 
+    /** Borra los temporales del editor y de las subidas del selector. */
+    fun clearCache() {
+        try {
+            val dir = getApplication<Application>().cacheDir
+            for (f in dir.listFiles() ?: emptyArray())
+                if (f.name.startsWith("droidscp") || f.name.startsWith("up_")) f.delete()
+        } catch (_: Exception) {}
+    }
+
     fun forgetHostKey() {
         val s = currentSite.value ?: return
         val i = sites.indexOfFirst { it.id == s.id }
@@ -461,12 +537,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     ctx.contentResolver.openInputStream(u)?.use { inp ->
                         tmp.outputStream().use { out -> inp.copyTo(out) }
                     }
-                    transfers.add(
-                        TransferItem(seq++, name, true, tmp.absolutePath,
-                            joinPath(remotePath.value, name), tmp.length())
-                    )
+                    val item = TransferItem(seq++, name, true, tmp.absolutePath,
+                        joinPath(remotePath.value, name), tmp.length())
+                    withContext(Dispatchers.Main) { transfers.add(item) }
                 } catch (e: Exception) { message.value = e.message }
             }
+            pushUi()
             startWorker()
         }
         screen.value = Screen.TRANSFERS
@@ -517,11 +593,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         clipboard.clear()
         clipboard.addAll(if (pane.value == Pane.REMOTE) remoteSelected.toList() else localSelected.toList())
         clipboardCut.value = cut
+        clipboardFromRemote.value = pane.value == Pane.REMOTE
         message.value = if (cut) "${clipboard.size} elemento(s) cortado(s)" else "${clipboard.size} elemento(s) copiado(s)"
     }
 
     fun paste() {
         if (clipboard.isEmpty()) return
+        val sameSide = clipboardFromRemote.value == (pane.value == Pane.REMOTE)
+        if (!sameSide) { pasteAcross(); return }
         if (pane.value == Pane.REMOTE) run(if (clipboardCut.value) "Moviendo…" else "Copiando…") {
             for (p in clipboard.toList()) {
                 val name = p.trimEnd('/').substringAfterLast('/')
@@ -543,6 +622,40 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             clipboard.clear(); refreshLocal()
         }
     }
+
+    /** Pegar entre paneles: se convierte en una subida o una descarga. */
+    private fun pasteAcross() {
+        val items = clipboard.toList()
+        val cut = clipboardCut.value
+        val fromRemote = clipboardFromRemote.value
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (fromRemote) {
+                    val destDir = localPath.value
+                    val list = client!!.list(parentOf(items))
+                    for (p in items) {
+                        val f = list.firstOrNull { it.path == p } ?: continue
+                        enqueueDownloadPublic(f, destDir)
+                    }
+                } else {
+                    for (p in items) {
+                        val f = File(p)
+                        if (f.exists()) enqueueUploadPublic(f, remotePath.value)
+                    }
+                }
+                if (cut) message.value = "Se copiarán los archivos (mover entre móvil y servidor no está soportado)"
+                withContext(Dispatchers.Main) { clipboard.clear(); screen.value = Screen.TRANSFERS }
+                pushUi()
+                startWorker()
+            } catch (e: Exception) { message.value = e.message; pushUi() }
+        }
+    }
+
+    private fun parentOf(items: List<String>): String =
+        items.firstOrNull()?.let { parentPath(it) } ?: remotePath.value
+
+    private fun enqueueDownloadPublic(f: RemoteFile, destDir: String) = enqueueDownload(f, destDir)
+    private fun enqueueUploadPublic(f: File, destPath: String) = enqueueUpload(f, destPath)
 
     private suspend fun reloadRemote() {
         val files = client!!.list(remotePath.value)
@@ -577,7 +690,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             busy.value = true; busyText.value = label
             try { withContext(Dispatchers.IO) { block() } }
-            catch (e: Exception) { message.value = e.message ?: e.javaClass.simpleName }
+            catch (e: Exception) {
+                var t: Throwable? = e
+                var unknown: UnknownHostKeyException? = null
+                while (t != null) { if (t is UnknownHostKeyException) { unknown = t; break }; t = t.cause }
+                if (unknown != null) pendingHostKey.value = pendingSite to unknown.fingerprint
+                else message.value = e.message ?: e.javaClass.simpleName
+            }
             finally { busy.value = false; busyText.value = "" }
         }
     }

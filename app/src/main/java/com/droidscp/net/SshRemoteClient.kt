@@ -15,6 +15,7 @@ import java.util.EnumSet
 
 class SshRemoteClient(
     private val site: Site,
+    private val trustNew: Boolean = false,
     private val onHostKey: (String) -> Unit = {}
 ) : RemoteClient {
 
@@ -41,7 +42,10 @@ class SshRemoteClient(
         c.addHostKeyVerifier(object : HostKeyVerifier {
             override fun verify(hostname: String, port: Int, key: java.security.PublicKey): Boolean {
                 val fp = SecurityUtils.getFingerprint(key)
-                if (site.hostKey.isBlank()) { site.hostKey = fp; onHostKey(fp); return true }
+                if (site.hostKey.isBlank()) {
+                    if (!trustNew) throw UnknownHostKeyException(fp)
+                    site.hostKey = fp; onHostKey(fp); return true
+                }
                 if (site.hostKey == fp) return true
                 throw RuntimeException(
                     "La huella del servidor ha cambiado.\nGuardada: ${site.hostKey}\nActual: $fp\n" +
@@ -196,8 +200,24 @@ class SshRemoteClient(
     }
 
     override fun copy(from: String, to: String, isDir: Boolean) {
-        val out = exec("cp -r ${shq(from)} ${shq(to)} && echo OK")
-        if (!out.contains("OK")) throw RuntimeException(out.trim().ifBlank { "No se pudo copiar" })
+        val out = try { exec("cp -r ${shq(from)} ${shq(to)} && echo OK") } catch (e: Exception) { "" }
+        if (out.contains("OK")) return
+        // Servidores sin shell (solo SFTP): se copia leyendo y escribiendo por SFTP.
+        if (scpMode) throw RuntimeException(out.trim().ifBlank { "No se pudo copiar" })
+        copyViaSftp(from, to)
+    }
+
+    private fun copyViaSftp(from: String, to: String) {
+        val attrs = sftp().stat(from)
+        if (attrs.mode.type == net.schmizz.sshj.sftp.FileMode.Type.DIRECTORY) {
+            try { sftp().mkdir(to) } catch (_: Exception) {}
+            for (ch in list(from)) copyViaSftp(ch.path, joinPath(to, ch.name))
+        } else {
+            val tmp = File.createTempFile("droidscp", ".bin")
+            download(from, tmp, attrs.size) { _, _ -> }
+            upload(tmp, to) { _, _ -> }
+            tmp.delete()
+        }
     }
 
     override fun chmod(path: String, octal: String) {

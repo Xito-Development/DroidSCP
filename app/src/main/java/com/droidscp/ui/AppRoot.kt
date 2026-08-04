@@ -58,6 +58,42 @@ fun AppRoot(vm: AppViewModel) {
                 Screen.SETTINGS -> SettingsScreen(vm)
                 Screen.ABOUT -> AboutScreen(vm)
             }
+            vm.pendingHostKey.value?.let { (site, fp) ->
+                AlertDialog(
+                    onDismissRequest = { vm.pendingHostKey.value = null },
+                    title = { Text("Servidor desconocido") },
+                    text = {
+                        Column {
+                            Text("Es la primera vez que te conectas a ${site.host}. Comprueba que esta huella coincide con la de tu servidor antes de aceptar:",
+                                fontSize = 13.sp)
+                            Spacer(Modifier.height(10.dp))
+                            Text(fp, fontFamily = FontFamily.Monospace, fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.primary)
+                        }
+                    },
+                    confirmButton = { TextButton(onClick = { vm.trustAndConnect() }) { Text("Confiar y conectar") } },
+                    dismissButton = { TextButton(onClick = { vm.pendingHostKey.value = null }) { Text("Cancelar") } }
+                )
+            }
+            vm.askPasswordFor.value?.let { site ->
+                var pw by remember(site.id) { mutableStateOf("") }
+                AlertDialog(
+                    onDismissRequest = { vm.askPasswordFor.value = null },
+                    title = { Text("Contraseña") },
+                    text = {
+                        Column {
+                            Text("No se guardan contraseñas. Introduce la de ${site.user}@${site.host}:",
+                                fontSize = 13.sp)
+                            Spacer(Modifier.height(10.dp))
+                            OutlinedTextField(value = pw, onValueChange = { pw = it }, singleLine = true,
+                                visualTransformation = PasswordVisualTransformation(),
+                                shape = RoundedCornerShape(12.dp))
+                        }
+                    },
+                    confirmButton = { TextButton(onClick = { vm.connectWithPassword(site, pw) }) { Text("Conectar") } },
+                    dismissButton = { TextButton(onClick = { vm.askPasswordFor.value = null }) { Text("Cancelar") } }
+                )
+            }
             if (vm.busy.value) {
                 Box(Modifier.fillMaxSize().background(Color(0x66000000)), contentAlignment = Alignment.Center) {
                     Surface(shape = RoundedCornerShape(18.dp), tonalElevation = 4.dp) {
@@ -173,6 +209,14 @@ fun SiteEditScreen(vm: AppViewModel) {
         if (s.protocol == Protocol.SFTP || s.protocol == Protocol.SCP) {
             Field("Clave privada: ruta en el móvil (opcional)", s.keyPath) { s = s.copy(keyPath = it) }
             Field("Passphrase de la clave (opcional)", s.keyPassphrase, password = true) { s = s.copy(keyPassphrase = it) }
+        }
+        if (s.protocol == Protocol.FTP) {
+            Surface(shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                Text("FTP envía la contraseña y los archivos sin cifrar. Usa FTPS o SFTP siempre que el servidor lo permita.",
+                    Modifier.padding(12.dp), fontSize = 12.sp)
+            }
         }
         if (s.protocol == Protocol.FTP || s.protocol == Protocol.FTPS) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -785,6 +829,26 @@ fun SettingsScreen(vm: AppViewModel) {
             }
             Spacer(Modifier.height(22.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = vm.secureScreen.value, onCheckedChange = { vm.setSecureScreen(it) })
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text("Bloquear capturas de pantalla")
+                    Text("Oculta la app en el multitarea e impide capturas (al reiniciarla)",
+                        fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Spacer(Modifier.height(22.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = vm.savePasswords.value, onCheckedChange = { vm.setSavePasswords(it) })
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text("Guardar contraseñas")
+                    Text("Si lo desactivas se borran las guardadas y se piden al conectar",
+                        fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Spacer(Modifier.height(22.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Switch(checked = vm.biometric.value, onCheckedChange = { vm.setBiometric(it) })
                 Spacer(Modifier.width(12.dp))
                 Column {
@@ -814,6 +878,12 @@ fun AboutScreen(vm: AppViewModel) {
             Text("© 2026 kVe — Xito Development", fontSize = 13.sp)
             Text("Publicado bajo licencia MIT. El texto completo está en el archivo LICENSE del proyecto.",
                 fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(20.dp))
+            Text("Seguridad", fontWeight = FontWeight.SemiBold)
+            Text("Las conexiones se guardan cifradas con AES-256-GCM usando una clave del Android Keystore. " +
+                "La app no permite copias de seguridad ni transferencia de datos a otro dispositivo, " +
+                "y verifica la huella del servidor SSH en cada conexión.",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(20.dp))
             Text("Software de terceros", fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))

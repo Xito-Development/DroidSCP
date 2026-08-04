@@ -62,6 +62,21 @@ terminal SSH, editor remoto, favoritos y gestor de conexiones.
 - Comprimir/descomprimir y los túneles solo funcionan por SSH/SFTP/SCP.
 
 
+## Seguridad
+
+- Conexiones guardadas **cifradas** con AES-256-GCM y clave del Android Keystore
+  (antes se guardaban en claro; al actualizar se migran solas y se borra el rastro).
+- Copias de seguridad y transferencia a otro dispositivo **desactivadas**, para que
+  las credenciales no salgan del móvil.
+- **Verificación de la huella del servidor SSH**: la primera vez te la muestra y hay que
+  aceptarla; si cambia después, la app no conecta y avisa.
+- **Bloquear capturas de pantalla** (activado por defecto) y **bloqueo con huella o PIN**
+  que se reactiva cada vez que sales de la app.
+- Opción de **no guardar contraseñas**: se piden al conectar y solo viven en memoria.
+- Aviso al usar FTP sin cifrar y recomendación de FTPS/SFTP.
+- Los archivos temporales del editor y de las subidas se borran al desconectar.
+- Todo lo que se ejecuta por shell va con las rutas entrecomilladas y escapadas.
+
 ## Licencia
 
 DroidSCP se publica bajo **licencia MIT** — ver el archivo [`LICENSE`](LICENSE).

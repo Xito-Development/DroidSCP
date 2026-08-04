@@ -36,9 +36,13 @@ interface RemoteClient {
     fun close()
 }
 
+class UnknownHostKeyException(val fingerprint: String) :
+    RuntimeException("Servidor desconocido")
+
 object ClientFactory {
-    fun create(site: Site, onHostKey: (String) -> Unit = {}): RemoteClient = when (site.protocol) {
-        Protocol.SFTP, Protocol.SCP -> SshRemoteClient(site, onHostKey)
+    fun create(site: Site, trustNew: Boolean = false, onHostKey: (String) -> Unit = {}): RemoteClient =
+        when (site.protocol) {
+        Protocol.SFTP, Protocol.SCP -> SshRemoteClient(site, trustNew, onHostKey)
         Protocol.FTP, Protocol.FTPS -> FtpRemoteClient(site)
     }
 }

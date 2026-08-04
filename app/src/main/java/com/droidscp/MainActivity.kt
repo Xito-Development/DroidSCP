@@ -27,11 +27,27 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val store = SiteStore(this)
+        if (store.secureScreen) {
+            window.setFlags(
+                android.view.WindowManager.LayoutParams.FLAG_SECURE,
+                android.view.WindowManager.LayoutParams.FLAG_SECURE
+            )
+        }
         requestStorage()
         requestNotifications()
         setContent {
             DroidTheme {
-                var unlocked by remember { mutableStateOf(!SiteStore(this@MainActivity).biometric) }
+                var unlocked by remember { mutableStateOf(!store.biometric) }
+                if (store.biometric) {
+                    DisposableEffect(Unit) {
+                        val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+                            if (e == androidx.lifecycle.Lifecycle.Event.ON_STOP) unlocked = false
+                        }
+                        lifecycle.addObserver(obs)
+                        onDispose { lifecycle.removeObserver(obs) }
+                    }
+                }
                 if (unlocked) {
                     val vm: AppViewModel = viewModel()
                     AppRoot(vm)
