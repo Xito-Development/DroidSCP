@@ -66,24 +66,38 @@ class SshRemoteClient(
 
     private fun doConnect(conservative: Boolean) {
         val c = SSHClient(buildConfig(conservative))
+        var seenFp: String? = null
+        var mismatch: String? = null
         c.addHostKeyVerifier(object : HostKeyVerifier {
             override fun verify(hostname: String, port: Int, key: java.security.PublicKey): Boolean {
                 val fp = SecurityUtils.getFingerprint(key)
+                seenFp = fp
                 if (site.hostKey.isBlank()) {
-                    if (!trustNew) throw UnknownHostKeyException(fp)
+                    if (!trustNew) return false          // se pide confirmación al usuario
                     site.hostKey = fp; onHostKey(fp); return true
                 }
                 if (site.hostKey == fp) return true
-                throw RuntimeException(
-                    "La huella del servidor ha cambiado.\nGuardada: ${site.hostKey}\nActual: $fp\n" +
-                    "Si el cambio es legítimo, borra la huella en los ajustes de la conexión."
-                )
+                mismatch = fp
+                return false
             }
             override fun findExistingAlgorithms(hostname: String, port: Int): MutableList<String> = mutableListOf()
         })
         c.connectTimeout = 20000
         c.timeout = 60000
-        c.connect(site.host, if (site.port > 0) site.port else 22)
+        try {
+            c.connect(site.host, if (site.port > 0) site.port else 22)
+        } catch (e: Exception) {
+            mismatch?.let {
+                throw RuntimeException(
+                    "La huella del servidor ha cambiado.\nGuardada: ${site.hostKey}\nActual: $it\n" +
+                    "Si el cambio es legítimo, usa \"Olvidar huella del servidor\"."
+                )
+            }
+            if (site.hostKey.isBlank() && !trustNew) {
+                seenFp?.let { throw UnknownHostKeyException(it) }
+            }
+            throw e
+        }
         if (site.keyPath.isNotBlank()) {
             val kp = if (site.keyPassphrase.isNotBlank())
                 c.loadKeys(site.keyPath, PasswordUtils.createOneOff(site.keyPassphrase.toCharArray()))
