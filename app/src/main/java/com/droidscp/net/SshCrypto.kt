@@ -17,8 +17,10 @@ object SshCrypto {
         try {
             // Android trae una versión recortada y antigua de BouncyCastle: se sustituye
             // por la completa que incluye la app.
+            // Se quita la BC recortada de Android y se añade la completa AL FINAL:
+            // insertarla en primera posición rompe el TLS del sistema.
             Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
-            Security.insertProviderAt(BouncyCastleProvider(), 1)
+            Security.addProvider(BouncyCastleProvider())
         } catch (_: Throwable) {
         }
         try {

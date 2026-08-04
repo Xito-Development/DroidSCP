@@ -23,13 +23,17 @@ class SshRemoteClient(
     private var sftp: SFTPClient? = null
     private var scpMode = false   // solo si el servidor no ofrece subsistema SFTP
 
-    private fun buildConfig(): DefaultConfig {
+    /**
+     * conservative = configuración de máxima compatibilidad, sin algoritmos
+     * modernos que dependen de la criptografía que Android puede no tener.
+     */
+    private fun buildConfig(conservative: Boolean): DefaultConfig {
         val cfg = DefaultConfig()
-        if (!SshCrypto.hasX25519) {
+        if (conservative || !SshCrypto.hasX25519) {
             cfg.keyExchangeFactories = cfg.keyExchangeFactories
                 .filter { !it.name.lowercase().contains("curve25519") }
         }
-        if (!SshCrypto.hasEd25519) {
+        if (conservative || !SshCrypto.hasEd25519) {
             cfg.keyAlgorithms = cfg.keyAlgorithms
                 .filter { !it.name.lowercase().contains("ed25519") }
         }
@@ -38,7 +42,30 @@ class SshRemoteClient(
 
     override fun connect() {
         SshCrypto.init()
-        val c = SSHClient(buildConfig())
+        try {
+            doConnect(false)
+        } catch (e: Exception) {
+            var t: Throwable? = e
+            var known = false
+            var text = ""
+            while (t != null) {
+                if (t is UnknownHostKeyException) known = true
+                text += " " + (t.message ?: "")
+                t = t.cause
+            }
+            val msg = text.lowercase()
+            val fatal = known || msg.contains("auth") || msg.contains("password") ||
+                msg.contains("contraseña") || msg.contains("huella")
+            if (fatal) throw e
+            // Reintento en modo compatibilidad: muchos servidores cortan la conexión
+            // si el intercambio de claves negociado no les encaja.
+            try { close() } catch (_: Exception) {}
+            doConnect(true)
+        }
+    }
+
+    private fun doConnect(conservative: Boolean) {
+        val c = SSHClient(buildConfig(conservative))
         c.addHostKeyVerifier(object : HostKeyVerifier {
             override fun verify(hostname: String, port: Int, key: java.security.PublicKey): Boolean {
                 val fp = SecurityUtils.getFingerprint(key)
